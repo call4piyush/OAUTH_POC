@@ -1,0 +1,114 @@
+services:
+  postgres-keycloak:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: keycloak
+      POSTGRES_DB: keycloak
+    volumes:
+      - keycloak-data:/var/lib/postgresql/data
+    networks:
+      - poc-net
+
+  postgres-app:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: app
+      POSTGRES_DB: users
+    volumes:
+      - app-data:/var/lib/postgresql/data
+    networks:
+      - poc-net
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0
+    command:
+      - start-dev
+      - --import-realm
+    environment:
+      KC_DB: postgres
+      KC_DB_URL_HOST: postgres-keycloak
+      KC_DB_URL_DATABASE: keycloak
+      KC_DB_USERNAME: keycloak
+      KC_DB_PASSWORD: keycloak
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./infra/keycloak:/opt/keycloak/data/import
+    depends_on:
+      - postgres-keycloak
+    networks:
+      - poc-net
+
+  api-gateway:
+    build: ./backend/api-gateway
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      KEYCLOAK_ISSUER_URI: http://keycloak:8080/realms/poc
+      KEYCLOAK_JWKS_URI: http://keycloak:8080/realms/poc/protocol/openid-connect/certs
+      USER_SERVICE_BASE_URL: http://user-service:8080
+    ports:
+      - "8082:8080"
+    depends_on:
+      - keycloak
+    networks:
+      - poc-net
+
+  user-service:
+    build: ./backend/user-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-app:5432/users
+      SPRING_DATASOURCE_USERNAME: app
+      SPRING_DATASOURCE_PASSWORD: app
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      KEYCLOAK_ISSUER_URI: http://keycloak:8080/realms/poc
+    ports:
+      - "8083:8080"
+    depends_on:
+      - postgres-app
+      - keycloak
+    networks:
+      - poc-net
+
+  bff:
+    build: ./services/bff
+    environment:
+      PORT: 8081
+      KEYCLOAK_BASE_URL: http://keycloak:8080/realms/poc
+      KEYCLOAK_CLIENT_ID: bff-client
+      KEYCLOAK_TOKEN_URL: http://keycloak:8080/realms/poc/protocol/openid-connect/token
+      GATEWAY_URL: http://api-gateway:8080
+      SESSION_SECRET: change-me
+    ports:
+      - "8081:8081"
+    depends_on:
+      - keycloak
+      - api-gateway
+    networks:
+      - poc-net
+
+  auth-ui:
+    build: ./frontend/auth-ui
+    environment:
+      BFF_BASE_URL: http://bff:8081
+    ports:
+      - "4200:80"
+    depends_on:
+      - bff
+    networks:
+      - poc-net
+
+networks:
+  poc-net:
+    driver: bridge
+
+volumes:
+  keycloak-data:
+  app-data:
+

@@ -1,0 +1,56 @@
+{
+  "realm": "poc",
+  "enabled": true,
+  "users": [],
+  "roles": {
+    "realm": [
+      {
+        "name": "ROLE_USER",
+        "description": "Standard user role",
+        "composite": false,
+        "clientRole": false
+      },
+      {
+        "name": "ROLE_ADMIN",
+        "description": "Administrator role",
+        "composite": false,
+        "clientRole": false
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "bff-client",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "authorizationServicesEnabled": false,
+      "redirectUris": [
+        "http://localhost:8081/callback",
+        "http://localhost:4200/*"
+      ],
+      "webOrigins": [
+        "http://localhost:4200",
+        "http://localhost:8081"
+      ]
+    },
+    {
+      "clientId": "gateway-client",
+      "publicClient": false,
+      "secret": "gateway-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "clientAuthenticatorType": "client-secret",
+      "redirectUris": [],
+      "authorizationServicesEnabled": false
+    }
+  ],
+  "groups": [],
+  "defaultRoles": [
+    "offline_access",
+    "uma_authorization"
+  ]
+}
+

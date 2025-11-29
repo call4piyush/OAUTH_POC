@@ -1,0 +1,51 @@
+spring:
+  application:
+    name: api-gateway
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://localhost:8080/realms/poc}
+          jwk-set-uri: ${KEYCLOAK_JWKS_URI:http://localhost:8080/realms/poc/protocol/openid-connect/certs}
+  cloud:
+    gateway:
+      default-filters:
+        - RemoveHopByHopHeaders=connection,keep-alive,proxy-authenticate,proxy-authorization,te,trailer,transfer-encoding,upgrade
+      routes:
+        - id: user-service
+          uri: ${USER_SERVICE_BASE_URL:http://localhost:8083}
+          predicates:
+            - Path=/api/users/**
+          filters:
+            - StripPrefix=1
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+---
+spring:
+  config:
+    activate:
+      on-profile: docker
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          issuer-uri: ${KEYCLOAK_ISSUER_URI:http://keycloak:8080/realms/poc}
+          jwk-set-uri: ${KEYCLOAK_JWKS_URI:http://keycloak:8080/realms/poc/protocol/openid-connect/certs}
+  cloud:
+    gateway:
+      routes:
+        - id: user-service
+          uri: ${USER_SERVICE_BASE_URL:http://user-service:8080}
+          predicates:
+            - Path=/api/users/**
+          filters:
+            - StripPrefix=1
+

@@ -1,0 +1,12 @@
+target/
+node_modules/
+dist/
+.idea/
+.vscode/
+.DS_Store
+*.iml
+frontend/auth-ui/.angular/
+frontend/auth-ui/.cache/
+services/bff/.pnpm-debug.log
+
+
