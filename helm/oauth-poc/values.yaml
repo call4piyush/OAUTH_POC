@@ -1,0 +1,125 @@
+global:
+  imageRegistry: ""
+  imagePullPolicy: IfNotPresent
+  namespace: oauth-poc
+
+api-gateway:
+  enabled: true
+  image:
+    repository: api-gateway
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 8080
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 200m
+      memory: 256Mi
+  env:
+    KEYCLOAK_ISSUER_URI: "http://keycloak:8080/realms/poc"
+    KEYCLOAK_JWKS_URI: "http://keycloak:8080/realms/poc/protocol/openid-connect/certs"
+    USER_SERVICE_BASE_URL: "http://user-service:8080"
+
+user-service:
+  enabled: true
+  image:
+    repository: user-service
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 8080
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 200m
+      memory: 256Mi
+  env:
+    SPRING_DATASOURCE_URL: "jdbc:postgresql://postgres-app:5432/users"
+    SPRING_DATASOURCE_USERNAME: "app"
+    SPRING_DATASOURCE_PASSWORD: "app"
+    KEYCLOAK_ISSUER_URI: "http://keycloak:8080/realms/poc"
+
+bff:
+  enabled: true
+  image:
+    repository: bff
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 8081
+  resources:
+    limits:
+      cpu: 300m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  env:
+    KEYCLOAK_BASE_URL: "http://keycloak:8080/realms/poc"
+    KEYCLOAK_CLIENT_ID: "bff-client"
+    GATEWAY_URL: "http://api-gateway:8080"
+
+auth-ui:
+  enabled: true
+  image:
+    repository: auth-ui
+    tag: latest
+    pullPolicy: IfNotPresent
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 80
+  resources:
+    limits:
+      cpu: 200m
+      memory: 128Mi
+    requests:
+      cpu: 100m
+      memory: 64Mi
+  env:
+    BFF_BASE_URL: "http://bff:8081"
+
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: "16"
+  persistence:
+    enabled: true
+    size: 10Gi
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 200m
+      memory: 256Mi
+
+keycloak:
+  enabled: true
+  image:
+    repository: quay.io/keycloak/keycloak
+    tag: "26.0"
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 8080
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 1Gi
+    requests:
+      cpu: 500m
+      memory: 512Mi
+

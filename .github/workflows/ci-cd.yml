@@ -1,0 +1,384 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  JAVA_VERSION: '21'
+  NODE_VERSION: '18'
+  MAVEN_OPTS: '-Dmaven.repo.local=.m2/repository'
+  DOCKER_REGISTRY: ${{ secrets.DOCKER_REGISTRY || 'your-registry.io' }}
+  NEXUS_URL: ${{ secrets.NEXUS_URL }}
+  NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
+  NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+  SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+  EKS_CLUSTER_NAME: ${{ secrets.EKS_CLUSTER_NAME }}
+  AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+  HELM_CHART_VERSION: ${{ github.sha }}
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Shallow clones should be disabled for better SonarQube analysis
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: |
+            frontend/auth-ui/package-lock.json
+            services/bff/package-lock.json
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Build Backend Services
+        run: |
+          cd backend
+          mvn clean install -DskipTests
+
+      - name: Run Unit Tests - Backend
+        run: |
+          cd backend
+          mvn test
+
+      - name: Install Frontend Dependencies
+        run: |
+          cd frontend/auth-ui
+          npm ci
+
+      - name: Run Frontend Tests
+        run: |
+          cd frontend/auth-ui
+          npm test -- --watch=false --browsers=ChromeHeadless
+
+      - name: Install BFF Dependencies
+        run: |
+          cd services/bff
+          npm ci
+
+      - name: Build Frontend
+        run: |
+          cd frontend/auth-ui
+          npm run build
+
+      - name: Build BFF
+        run: |
+          cd services/bff
+          npm run build
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: |
+            backend/**/target/surefire-reports/*.xml
+            frontend/auth-ui/coverage/
+
+  sonarqube-analysis:
+    name: SonarQube Analysis
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Cache Maven dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2
+          key: ${{ runner.os }}-m2-${{ hashFiles('**/pom.xml') }}
+          restore-keys: ${{ runner.os }}-m2
+
+      - name: Run SonarQube Analysis
+        uses: sonarsource/sonarqube-scan-action@master
+        env:
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+        with:
+          args: >
+            -Dsonar.projectKey=oauth-poc
+            -Dsonar.sources=backend
+            -Dsonar.java.binaries=backend/**/target/classes
+            -Dsonar.coverage.jacoco.xmlReportPaths=backend/**/target/site/jacoco/jacoco.xml
+            -Dsonar.exclusions=**/target/**,**/node_modules/**,**/*.config.js
+
+      - name: SonarQube Quality Gate Check
+        uses: sonarsource/sonarqube-quality-gate-action@master
+        timeout-minutes: 5
+        env:
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+
+  vulnerability-scan:
+    name: Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner for Java
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: './backend'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Run Trivy vulnerability scanner for Node.js
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: './frontend/auth-ui,./services/bff'
+          format: 'sarif'
+          output: 'trivy-node-results.sarif'
+          severity: 'CRITICAL,HIGH'
+
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Scan Docker images
+        run: |
+          docker build -t api-gateway:test ./backend/api-gateway
+          docker build -t user-service:test ./backend/user-service
+          docker build -t bff:test ./services/bff
+          docker build -t auth-ui:test ./frontend/auth-ui
+
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'api-gateway:test,user-service:test,bff:test,auth-ui:test'
+          format: 'table'
+          exit-code: '1'
+          severity: 'CRITICAL,HIGH'
+
+  build-and-push-images:
+    name: Build and Push Docker Images
+    runs-on: ubuntu-latest
+    needs: [build-and-test, sonarqube-analysis, vulnerability-scan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push API Gateway
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend/api-gateway
+          push: true
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/api-gateway:${{ github.sha }}
+            ${{ env.DOCKER_REGISTRY }}/api-gateway:latest
+          cache-from: type=registry,ref=${{ env.DOCKER_REGISTRY }}/api-gateway:buildcache
+          cache-to: type=registry,ref=${{ env.DOCKER_REGISTRY }}/api-gateway:buildcache,mode=max
+
+      - name: Build and push User Service
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend/user-service
+          push: true
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/user-service:${{ github.sha }}
+            ${{ env.DOCKER_REGISTRY }}/user-service:latest
+          cache-from: type=registry,ref=${{ env.DOCKER_REGISTRY }}/user-service:buildcache
+          cache-to: type=registry,ref=${{ env.DOCKER_REGISTRY }}/user-service:buildcache,mode=max
+
+      - name: Build and push BFF
+        uses: docker/build-push-action@v5
+        with:
+          context: ./services/bff
+          push: true
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/bff:${{ github.sha }}
+            ${{ env.DOCKER_REGISTRY }}/bff:latest
+          cache-from: type=registry,ref=${{ env.DOCKER_REGISTRY }}/bff:buildcache
+          cache-to: type=registry,ref=${{ env.DOCKER_REGISTRY }}/bff:buildcache,mode=max
+
+      - name: Build and push Auth UI
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend/auth-ui
+          push: true
+          tags: |
+            ${{ env.DOCKER_REGISTRY }}/auth-ui:${{ github.sha }}
+            ${{ env.DOCKER_REGISTRY }}/auth-ui:latest
+          cache-from: type=registry,ref=${{ env.DOCKER_REGISTRY }}/auth-ui:buildcache
+          cache-to: type=registry,ref=${{ env.DOCKER_REGISTRY }}/auth-ui:buildcache,mode=max
+
+  upload-to-nexus:
+    name: Upload Artifacts to Nexus
+    runs-on: ubuntu-latest
+    needs: [build-and-test, sonarqube-analysis, vulnerability-scan]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Configure Maven for Nexus
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml <<EOF
+          <settings>
+            <servers>
+              <server>
+                <id>nexus</id>
+                <username>${{ env.NEXUS_USERNAME }}</username>
+                <password>${{ env.NEXUS_PASSWORD }}</password>
+              </server>
+            </servers>
+          </settings>
+          EOF
+
+      - name: Build and Deploy to Nexus
+        run: |
+          cd backend
+          mvn clean deploy -DskipTests \
+            -Dmaven.deploy.skip=false \
+            -DaltDeploymentRepository=nexus::default::${{ env.NEXUS_URL }}/repository/maven-releases/
+
+  package-helm-charts:
+    name: Package Helm Charts
+    runs-on: ubuntu-latest
+    needs: [build-and-push-images]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.12.0'
+
+      - name: Package Helm Charts
+        run: |
+          helm package helm/api-gateway -d helm-packages/ --version ${{ github.sha }}
+          helm package helm/user-service -d helm-packages/ --version ${{ github.sha }}
+          helm package helm/bff -d helm-packages/ --version ${{ github.sha }}
+          helm package helm/auth-ui -d helm-packages/ --version ${{ github.sha }}
+          helm package helm/oauth-poc -d helm-packages/ --version ${{ github.sha }}
+
+      - name: Upload Helm packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: helm-charts
+          path: helm-packages/*.tgz
+
+  deploy-to-eks:
+    name: Deploy to EKS
+    runs-on: ubuntu-latest
+    needs: [package-helm-charts, upload-to-nexus]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+
+      - name: Set up Helm
+        uses: azure/setup-helm@v3
+        with:
+          version: '3.12.0'
+
+      - name: Download Helm packages
+        uses: actions/download-artifact@v4
+        with:
+          name: helm-charts
+          path: helm-packages/
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --name ${{ env.EKS_CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Deploy to EKS using Helm
+        run: |
+          helm upgrade --install oauth-poc helm-packages/oauth-poc-${{ github.sha }}.tgz \
+            --namespace oauth-poc \
+            --create-namespace \
+            --set global.imageRegistry=${{ env.DOCKER_REGISTRY }}/ \
+            --set api-gateway.image.tag=${{ github.sha }} \
+            --set user-service.image.tag=${{ github.sha }} \
+            --set bff.image.tag=${{ github.sha }} \
+            --set auth-ui.image.tag=${{ github.sha }} \
+            --wait \
+            --timeout 10m
+
+      - name: Verify Deployment
+        run: |
+          kubectl get pods -n oauth-poc
+          kubectl get services -n oauth-poc
+          kubectl rollout status deployment/api-gateway -n oauth-poc --timeout=5m
+          kubectl rollout status deployment/user-service -n oauth-poc --timeout=5m
+          kubectl rollout status deployment/bff -n oauth-poc --timeout=5m
+          kubectl rollout status deployment/auth-ui -n oauth-poc --timeout=5m
+

@@ -1,0 +1,67 @@
+replicaCount: 2
+
+image:
+  registry: ""
+  repository: bff
+  tag: latest
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext: {}
+
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 8081
+  targetPort: 8081
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: bff.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 300m
+    memory: 256Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+env:
+  PORT: "8081"
+  KEYCLOAK_BASE_URL: "http://keycloak:8080/realms/poc"
+  KEYCLOAK_CLIENT_ID: "bff-client"
+  KEYCLOAK_TOKEN_URL: "http://keycloak:8080/realms/poc/protocol/openid-connect/token"
+  GATEWAY_URL: "http://api-gateway:8080"
+  SESSION_SECRET: "change-me"
+

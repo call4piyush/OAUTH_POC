@@ -8,5 +8,9 @@ dist/
 frontend/auth-ui/.angular/
 frontend/auth-ui/.cache/
 services/bff/.pnpm-debug.log
+helm-packages/
+*.tgz
+.m2/
+*.log
 
 
